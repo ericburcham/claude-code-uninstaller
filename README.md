@@ -4,24 +4,33 @@
 
 Anthropic's native binary installation (currently in beta) doesn't provide an uninstall method. This script removes both npm and native binary installations completely.
 
-**Use Anthropic's official uninstall when they release one.** This is a temporary solution.
-
-## Why This Exists
-
-The native binary installation lacks proper uninstall functionality, and having both npm and native binary versions installed can cause conflicts and break your local setup. Common issues include:
-
-- Mixed installations pointing to different binaries
-- Shell completions from both versions conflicting  
-- PATH resolution picking the wrong installation
-- npm's uninstall failing with ENOTEMPTY errors
-
-This script provides a clean slate by removing all Claude Code installations and configurations, regardless of how they were installed.
+**Anthropic now provides [official uninstall instructions](https://code.claude.com/docs/en/setup#uninstall-claude-code).** As of 2026‑01‑06 you can follow their guide directly, but this script remains available if you prefer a single command that cleans up every installation source and makes backups for you.
 
 ## Usage
 
+### Why this exists
+
+Mixed npm/native installs used to leave stray binaries, shell completions, and caches that interfered with new releases. This script gives you a clean slate by removing every known Claude Code path (with backups) in one pass, which was especially important before Anthropic shipped an official uninstall flow.
+
+### Quick install (recommended)
+
 ```bash
-chmod +x uninstall-claude.sh
-./uninstall-claude.sh
+chmod +x install.sh
+./install.sh            # installs to ~/.local/bin/cc-uninstall by default
+cc-uninstall --help
+```
+
+**Verification:**
+```bash
+command -v cc-uninstall   # should print ~/.local/bin/cc-uninstall
+cc-uninstall --help       # shows usage banner
+```
+
+### Run directly
+
+```bash
+chmod +x cc-uninstall.sh
+./cc-uninstall.sh
 ```
 
 **Options:**
@@ -32,18 +41,20 @@ chmod +x uninstall-claude.sh
 **Examples:**
 ```bash
 # Interactive (asks before removing ~/.claude)
-./uninstall-claude.sh
+./cc-uninstall.sh
 
 # Automation/CI-CD
-./uninstall-claude.sh --quiet
+./cc-uninstall.sh --quiet
 ```
 
 ## What Gets Removed
 
 - **Binaries**: `~/.local/bin/claude`, `/usr/local/bin/claude`, etc.
+- **Data cache**: `~/.local/share/claude`
 - **NPM packages**: Global installations and broken leftovers
 - **Shell configs**: Removes Claude lines from `.bashrc`, `.zshrc`, etc. (creates backups)
-- **Data directory**: `~/.claude` (prompts unless --force)
+- **User settings**: `~/.claude`, `~/.claude.json`
+- **Project settings**: `.claude/` directory and `.mcp.json` in the directory where you run the script
 
 ## Safety Features
 
@@ -51,6 +62,8 @@ chmod +x uninstall-claude.sh
 ```bash
 ~/.zshrc.claude-backup.20250904-143022
 ```
+
+**Automatic asset backups**: Every directory/file deleted by the script (`~/.claude`, `~/.local/share/claude`, `~/.claude.json`, project `.claude/`, `.mcp.json`, npm installs, PATH binaries) is copied next to the original as `<name>.claude-backup.<timestamp>`. Restore by moving or copying that backup back into place, and you can confirm they exist with `ls <path>.claude-backup.*`.
 
 **Path validation**: Only removes the expected `~/.claude` directory, refuses to delete unexpected paths.
 
@@ -78,9 +91,6 @@ sudo rm -f /usr/local/bin/claude
 **Claude still in PATH after uninstall:**
 1. Restart terminal
 2. Run `./cc-uninstall.sh --force` again
-
-**For automation:**
-Script returns exit code 0 on success, non-zero if issues occurred.
 
 ## Platform Support
 

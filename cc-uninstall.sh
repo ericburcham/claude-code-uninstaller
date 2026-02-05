@@ -60,11 +60,45 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1" >&2
 }
 
+create_backup() {
+    local target_path="$1"
+    local backup_path="${target_path}.claude-backup.$(date +%Y%m%d-%H%M%S)"
+
+    if [ -e "$target_path" ]; then
+        if cp -a "$target_path" "$backup_path" 2>/dev/null; then
+            log_info "Created backup: $backup_path"
+            return 0
+        else
+            log_warning "Failed to create backup for $target_path"
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+confirm_removal() {
+    if [ "$FORCE" = false ] && [ "$QUIET" = false ]; then
+        echo -n "Are you sure you want to continue? [y/N]: "
+        read -r response
+        case "$response" in
+            [yY][eE][sS]|[yY])
+                return 0
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    fi
+
+    return 0
+}
+
 # Platform detection
 case "$(uname -s)" in
     Darwin) os="darwin" ;;
     Linux) os="linux" ;;
-    *) log_error "Windows is not supported"; exit 1 ;;
+    *) log_error "Native Windows is not supported. Please use WSL (Windows Subsystem for Linux)"; exit 1 ;;
 esac
 
 case "$(uname -m)" in
@@ -94,6 +128,8 @@ find_command() {
 # Define paths based on OS
 if [ "$os" = "darwin" ]; then
     CLAUDE_DIR="$HOME/.claude"
+    CLAUDE_DATA_DIR="$HOME/.local/share/claude"
+    CLAUDE_SETTINGS_FILE="$HOME/.claude.json"
     BINARY_PATHS=(
         "$HOME/.local/bin/claude"
         "/usr/local/bin/claude"
@@ -112,6 +148,8 @@ if [ "$os" = "darwin" ]; then
     )
 else
     CLAUDE_DIR="$HOME/.claude"
+    CLAUDE_DATA_DIR="$HOME/.local/share/claude"
+    CLAUDE_SETTINGS_FILE="$HOME/.claude.json"
     BINARY_PATHS=(
         "$HOME/.local/bin/claude"
         "/usr/local/bin/claude"
@@ -177,8 +215,7 @@ remove_shell_integration() {
     
     for config_file in "${SHELL_CONFIGS[@]}"; do
         if [ -f "$config_file" ]; then
-            # backup before modifying
-            cp "$config_file" "${config_file}.claude-backup.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+            create_backup "$config_file"
             
             # sed syntax differs between macOS and Linux
             if [ "$os" = "darwin" ]; then
@@ -251,6 +288,7 @@ remove_binaries() {
     
     for binary_path in "${BINARY_PATHS[@]}"; do
         if [ -f "$binary_path" ]; then
+            create_backup "$binary_path"
             if rm -f "$binary_path" 2>/dev/null; then
                 removed_count=$((removed_count + 1))
                 log_success "Removed binary: $binary_path"
@@ -267,6 +305,7 @@ remove_binaries() {
         claude_in_path=$(find_command claude)
         # safety check - only remove files ending with "claude"
         if [ -f "$claude_in_path" ] && [[ "$claude_in_path" == */claude ]]; then
+            create_backup "$claude_in_path"
             if rm -f "$claude_in_path" 2>/dev/null; then
                 removed_count=$((removed_count + 1))
                 log_success "Removed binary from PATH: $claude_in_path"
@@ -314,6 +353,7 @@ cleanup_npm_installation() {
         local npm_bin
         npm_bin=$(npm bin -g 2>/dev/null)
         if [ -n "$npm_bin" ] && [ -f "$npm_bin/claude" ]; then
+            create_backup "$npm_bin/claude"
             if rm -f "$npm_bin/claude" 2>/dev/null; then
                 log_success "Removed npm binary: $npm_bin/claude"
                 removed_npm=true
@@ -327,6 +367,7 @@ cleanup_npm_installation() {
     # manual cleanup of npm directories
     for npm_path in "${NPM_PATHS[@]}"; do
         if [ -d "$npm_path" ]; then
+            create_backup "$npm_path"
             if rm -rf "$npm_path" 2>/dev/null; then
                 log_success "Removed npm installation directory: $npm_path"
                 removed_npm=true
@@ -359,18 +400,16 @@ remove_claude_directory() {
             echo -e "${YELLOW}This will remove the Claude directory: $CLAUDE_DIR${NC}"
             echo -e "${YELLOW}Directory size: $dir_size${NC}"
             echo -e "${YELLOW}This includes configuration, cache, and downloaded files.${NC}"
-            echo -n "Are you sure you want to continue? [y/N]: "
-            read -r response
-            case "$response" in
-                [yY][eE][sS]|[yY])
-                    ;;
-                *)
-                    log_info "Skipping Claude directory removal"
-                    return 0
-                    ;;
-            esac
+            if ! confirm_removal; then
+                log_info "Skipping Claude directory removal"
+                return 0
+            fi
         fi
         
+        if ! create_backup "$CLAUDE_DIR"; then
+            log_warning "Proceeding without backup for $CLAUDE_DIR"
+        fi
+
         if rm -rf "$CLAUDE_DIR"; then
             log_success "Removed Claude directory: $CLAUDE_DIR ($dir_size)"
             return 0
@@ -382,6 +421,142 @@ remove_claude_directory() {
         log_info "Claude directory not found: $CLAUDE_DIR"
         return 0
     fi
+}
+
+remove_claude_data_directory() {
+    if [[ "$CLAUDE_DATA_DIR" != "$HOME/.local/share/claude" ]]; then
+        log_error "Refusing to remove unexpected data directory: $CLAUDE_DATA_DIR"
+        return 1
+    fi
+
+    if [ -d "$CLAUDE_DATA_DIR" ]; then
+        local dir_size
+        dir_size=$(du -sh "$CLAUDE_DATA_DIR" 2>/dev/null | cut -f1 || echo "unknown size")
+
+        if [ "$FORCE" = false ] && [ "$QUIET" = false ]; then
+            echo -e "${YELLOW}This will remove Claude cache/data: $CLAUDE_DATA_DIR${NC}"
+            echo -e "${YELLOW}Directory size: $dir_size${NC}"
+            if ! confirm_removal; then
+                log_info "Skipping Claude cache/data removal"
+                return 0
+            fi
+        fi
+
+        if ! create_backup "$CLAUDE_DATA_DIR"; then
+            log_warning "Proceeding without backup for $CLAUDE_DATA_DIR"
+        fi
+
+        if rm -rf "$CLAUDE_DATA_DIR"; then
+            log_success "Removed Claude data directory: $CLAUDE_DATA_DIR ($dir_size)"
+            return 0
+        else
+            log_error "Failed to remove Claude data directory: $CLAUDE_DATA_DIR"
+            return 1
+        fi
+    else
+        log_info "Claude data directory not found: $CLAUDE_DATA_DIR"
+        return 0
+    fi
+}
+
+remove_claude_settings_file() {
+    if [[ "$CLAUDE_SETTINGS_FILE" != "$HOME/.claude.json" ]]; then
+        log_error "Refusing to remove unexpected settings file: $CLAUDE_SETTINGS_FILE"
+        return 1
+    fi
+
+    if [ -f "$CLAUDE_SETTINGS_FILE" ]; then
+        if [ "$FORCE" = false ] && [ "$QUIET" = false ]; then
+            echo -e "${YELLOW}This will remove Claude settings file: $CLAUDE_SETTINGS_FILE${NC}"
+            if ! confirm_removal; then
+                log_info "Skipping Claude settings removal"
+                return 0
+            fi
+        fi
+
+        if ! create_backup "$CLAUDE_SETTINGS_FILE"; then
+            log_warning "Proceeding without backup for $CLAUDE_SETTINGS_FILE"
+        fi
+
+        if rm -f "$CLAUDE_SETTINGS_FILE"; then
+            log_success "Removed Claude settings file: $CLAUDE_SETTINGS_FILE"
+            return 0
+        else
+            log_error "Failed to remove Claude settings file: $CLAUDE_SETTINGS_FILE"
+            return 1
+        fi
+    else
+        log_info "Claude settings file not found: $CLAUDE_SETTINGS_FILE"
+        return 0
+    fi
+}
+
+cleanup_project_settings() {
+    local status=0
+    local project_dir
+    project_dir=$(pwd)
+    local project_claude_dir="$project_dir/.claude"
+    local project_mcp_file="$project_dir/.mcp.json"
+
+    if [ -d "$project_claude_dir" ]; then
+        if [ "$FORCE" = false ] && [ "$QUIET" = false ]; then
+            echo -e "${YELLOW}Project-specific Claude configuration detected at: $project_claude_dir${NC}"
+            if ! confirm_removal; then
+                log_info "Skipping project Claude directory removal"
+            else
+                if ! create_backup "$project_claude_dir"; then
+                    log_warning "Proceeding without backup for $project_claude_dir"
+                fi
+                if rm -rf "$project_claude_dir"; then
+                    log_success "Removed project Claude directory: $project_claude_dir"
+                else
+                    log_error "Failed to remove project Claude directory: $project_claude_dir"
+                    status=1
+                fi
+            fi
+        else
+            if ! create_backup "$project_claude_dir"; then
+                log_warning "Proceeding without backup for $project_claude_dir"
+            fi
+            if rm -rf "$project_claude_dir"; then
+                log_success "Removed project Claude directory: $project_claude_dir"
+            else
+                log_error "Failed to remove project Claude directory: $project_claude_dir"
+                status=1
+            fi
+        fi
+    fi
+
+    if [ -f "$project_mcp_file" ]; then
+        if [ "$FORCE" = false ] && [ "$QUIET" = false ]; then
+            echo -e "${YELLOW}Project MCP settings detected at: $project_mcp_file${NC}"
+            if ! confirm_removal; then
+                log_info "Skipping project MCP settings removal"
+            else
+                if ! create_backup "$project_mcp_file"; then
+                    log_warning "Proceeding without backup for $project_mcp_file"
+                fi
+                if rm -f "$project_mcp_file"; then
+                    log_success "Removed project MCP settings file: $project_mcp_file"
+                else
+                    log_error "Failed to remove project MCP settings file: $project_mcp_file"
+                    status=1
+                fi
+            fi
+        else
+            if ! create_backup "$project_mcp_file"; then
+                log_warning "Proceeding without backup for $project_mcp_file"
+            fi
+            if rm -f "$project_mcp_file"; then
+                log_success "Removed project MCP settings file: $project_mcp_file"
+            else
+                log_error "Failed to remove project MCP settings file: $project_mcp_file"
+                status=1
+            fi
+        fi
+    fi
+
+    return $status
 }
 
 cleanup_package_managers() {
@@ -446,6 +621,18 @@ main() {
     
     # always try to remove the Claude directory
     if ! remove_claude_directory; then
+        exit_code=1
+    fi
+
+    if ! remove_claude_data_directory; then
+        exit_code=1
+    fi
+
+    if ! remove_claude_settings_file; then
+        exit_code=1
+    fi
+
+    if ! cleanup_project_settings; then
         exit_code=1
     fi
     
